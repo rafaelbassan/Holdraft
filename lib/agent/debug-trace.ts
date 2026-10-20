@@ -80,6 +80,8 @@ export function stripDebugBlock(content: string): string {
   const text = (cut >= 0 ? content.slice(0, cut) : content).trim();
   return text;
 }
+
+export class AgentTrace {
   private steps: string[] = [];
   raw = "";
   reasoning = "";
