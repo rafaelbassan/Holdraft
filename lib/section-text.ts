@@ -250,14 +250,14 @@ export function messagesForModel<T extends { role: string; content: string }>(me
   const window = firstUser && !tail.includes(firstUser) ? [firstUser, ...tail] : tail;
   return window.map((message) => {
     const stripped = stripDebugBlock(message.content);
-    const visible =
+    const shown =
       stripped ||
       (message.content.includes("<!-- holdraft-debug -->") ? "(resposta sem texto)" : message.content);
     const limit = message === firstUser ? FIRST_USER_CHARS : LATER_MESSAGE_CHARS;
-    if (visible.length <= limit) {
-      return visible === message.content ? message : { ...message, content: visible };
+    if (shown.length <= limit) {
+      return shown === message.content ? message : { ...message, content: shown };
     }
-    return { ...message, content: `${visible.slice(0, limit)}\n…` };
+    return { ...message, content: `${shown.slice(0, limit)}\n…` };
   });
 }
 
