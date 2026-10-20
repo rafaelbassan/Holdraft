@@ -10,6 +10,8 @@ import type {
 import { cleanSectionTitle } from "@/lib/section-text";
 import { getRawSetting, SETTING_KEYS } from "@/lib/settings";
 import { resolveDraftAssignees, resolveDraftWatchers } from "@/lib/agent/assignees";
+import { prepareConsultaJql } from "@/lib/agent/consulta-jql";
+import { issueIsDone, orderConsultaCards, priorityRank } from "@/lib/agent/priority-order";
 import { existingDraftPromptBlock, hasCreatedIssuesInDraft } from "@/lib/agent/draft-state";
 import type { SectionDraftJson } from "@/lib/agent/types";
 import {
@@ -145,6 +147,7 @@ JSON schema:
 
 Rules:
 - intent consultar: no draft, no Jira writes. When status is ready, set jql to the exact query. message_markdown must answer in complete sentences in the UI language. Never stop after a colon or after "here is the query" with nothing following. The app appends the JQL and the issues found as text; still write the answer.
+- For a person in JQL, write assignee = "the name the user said" or reporter = "name". Do not use ~ on assignee or reporter and do not invent an accountId. The app looks the name up and rewrites the clause to the account id. On this Jira, ORDER BY priority ASC lists the lowest priority first. Highest priority first is ORDER BY priority DESC. Do not tell the user that ASC lists the highest priority first. Do not name a specific issue key as the winner. The app ranks the open issues after the search.
 - intent criar: apply card-rules; status ready only if draft complete and rules satisfied.
 - Never mark ready if a bug fix lacks a companion test issue per card-rules.
 - Section locked to consulta must stay consultar; criacao stays criar.
@@ -519,6 +522,41 @@ function formatConsultaCard(card: JiraCardSummary): string {
   return meta ? `- ${card.key} — ${summary} (${meta})` : `- ${card.key} — ${summary}`;
 }
 
+function immediateConsultaLine(cards: JiraCardSummary[], uiLanguage: string): string {
+  const open = cards.filter((card) => !issueIsDone(card.status));
+  if (!open.length) {
+    if (uiLanguage.startsWith("en")) {
+      return "Nothing in this result is still open.";
+    }
+    if (uiLanguage.startsWith("es")) {
+      return "Nada en este resultado sigue abierto.";
+    }
+    return "Nada neste resultado continua aberto.";
+  }
+  const best = priorityRank(open[0]?.priority);
+  const top = open.filter((card) => priorityRank(card.priority) === best);
+  const item = (card: JiraCardSummary) =>
+    `**${card.key}** — ${card.summary.trim() || card.key} (${[card.priority, card.status].filter(Boolean).join(" · ")})`;
+  if (top.length === 1) {
+    const card = top[0];
+    if (uiLanguage.startsWith("en")) {
+      return `Do this now: ${item(card)}.`;
+    }
+    if (uiLanguage.startsWith("es")) {
+      return `Haz esto ahora: ${item(card)}.`;
+    }
+    return `Faça agora: ${item(card)}.`;
+  }
+  const lines = top.map((card) => `- ${item(card)}`).join("\n");
+  if (uiLanguage.startsWith("en")) {
+    return `Do these now. They tie at the highest priority still open:\n${lines}`;
+  }
+  if (uiLanguage.startsWith("es")) {
+    return `Haz estas ahora. Empatan en la prioridad más alta que sigue abierta:\n${lines}`;
+  }
+  return `Faça agora. Estas empatam na prioridade mais alta que ainda está aberta:\n${lines}`;
+}
+
 function appendConsultaText(
   output: AgentModelOutput,
   cards: JiraCardSummary[] | undefined,
@@ -535,9 +573,18 @@ function appendConsultaText(
 
   const executed = jql || defaultConsultaJql();
   output.jql = executed;
-  const labels = consultaLabels(getRawSetting(SETTING_KEYS.uiLanguage) || "pt-BR");
+  const uiLanguage = getRawSetting(SETTING_KEYS.uiLanguage) || "pt-BR";
+  const labels = consultaLabels(uiLanguage);
+  const ranked = orderConsultaCards(cards ?? []);
+  const lead =
+    !failure && output.status === "ready" && ranked.length
+      ? immediateConsultaLine(ranked, uiLanguage)
+      : "";
   const message = output.message_markdown ?? "";
   const parts: string[] = [];
+  if (lead && !message.includes(lead)) {
+    parts.push(lead);
+  }
   if (!message.includes(executed)) {
     parts.push(`**${labels.query}**\n\n\`\`\`\n${executed}\n\`\`\``);
   }
@@ -547,18 +594,19 @@ function appendConsultaText(
     const reason = detail?.trim();
     parts.push(reason ? `${labels.failed} ${reason}` : labels.failed);
   } else if (output.status === "ready") {
-    const found = cards ?? [];
-    const listed = found.filter((card) => card.key && !message.includes(card.key));
+    const found = ranked;
     if (!found.length) {
       parts.push(labels.empty);
-    } else if (listed.length) {
-      parts.push(listed.map(formatConsultaCard).join("\n"));
+    } else {
+      parts.push(found.map(formatConsultaCard).join("\n"));
     }
   }
-  if (!parts.length) {
+  if (!parts.length && !lead) {
     return;
   }
-  output.message_markdown = `${message.trim()}\n\n${parts.join("\n\n")}`.trim();
+  const rest = parts.filter((part) => part !== lead);
+  const body = [message.trim(), ...rest].filter(Boolean).join("\n\n");
+  output.message_markdown = [lead, body].filter(Boolean).join("\n\n");
 }
 
 async function enrichWithJira(
@@ -582,12 +630,24 @@ async function enrichWithJira(
   }
 
   if (output.intent === "consultar" && output.status === "ready") {
+    output.jql = output.jql?.trim() || defaultConsultaJql();
+    const uiLanguage = getRawSetting(SETTING_KEYS.uiLanguage) || "pt-BR";
+    const ready = await prepareConsultaJql(output, client, trace, uiLanguage);
+    if (!ready) {
+      trace.step("A consulta não foi executada até o usuário da JQL ficar definido.");
+      return { result_cards: [] };
+    }
     const jql = output.jql?.trim() || defaultConsultaJql();
     output.jql = jql;
     trace.step(`Executando JQL: ${jql}`);
     try {
-      const result_cards = await searchJql(client, jql);
-      trace.step(`Jira devolveu ${result_cards.length} card(s).`);
+      const result_cards = orderConsultaCards(await searchJql(client, jql));
+      const first = result_cards[0];
+      trace.step(
+        `Jira devolveu ${result_cards.length} card(s). Ordem exibida: ${
+          first ? `${first.key} (${first.priority || "sem prioridade"}) primeiro` : "vazia"
+        }.`,
+      );
       return { result_cards };
     } catch (error) {
       const consulta_detail = error instanceof Error ? error.message : String(error);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef } from "react";
+import { DEBUG_MARKER } from "@/lib/agent/debug-trace";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -52,7 +53,7 @@ function MermaidBlock({ code }: { code: string }) {
   );
 }
 
-export function MarkdownMessage({ content, className = "" }: MarkdownMessageProps) {
+function MarkdownBody({ content, className = "" }: MarkdownMessageProps) {
   return (
     <div className={`prose prose-slate max-w-none text-sm ${className}`}>
       <ReactMarkdown
@@ -95,5 +96,24 @@ export function MarkdownMessage({ content, className = "" }: MarkdownMessageProp
         {content}
       </ReactMarkdown>
     </div>
+  );
+}
+
+export function MarkdownMessage({ content, className = "" }: MarkdownMessageProps) {
+  const cut = content.indexOf(DEBUG_MARKER);
+  const answer = cut >= 0 ? content.slice(0, cut).trim() : content;
+  const debug = cut >= 0 ? content.slice(cut + DEBUG_MARKER.length).trim() : "";
+  return (
+    <>
+      {answer ? <MarkdownBody content={answer} className={className} /> : null}
+      {debug ? (
+        <details className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+          <summary className="cursor-pointer text-xs font-medium text-slate-500">
+            Depuração
+          </summary>
+          <MarkdownBody content={debug} className={className} />
+        </details>
+      ) : null}
+    </>
   );
 }

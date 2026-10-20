@@ -5,6 +5,7 @@ import Link from "next/link";
 import { canConfirmDraft } from "@/lib/agent/draft-state";
 import { isStoredLlmFailure, storedFailureLooksBusy } from "@/lib/agent/llm-failure";
 import { sectionIsFull, sectionIsGrowing } from "@/lib/section-text";
+import { orderConsultaCards } from "@/lib/agent/priority-order";
 import { MarkdownMessage } from "@/components/MarkdownMessage";
 import type { Messages } from "@/lib/i18n";
 import type {
@@ -1231,7 +1232,7 @@ export function HomeChat({ t, modelConfigured }: HomeChatProps) {
 
               {detail.type === "consulta" && !(detail.draft.draft?.issues?.length) && (
                 <CardList
-                  cards={detail.draft.result_cards ?? []}
+                  cards={orderConsultaCards(detail.draft.result_cards ?? [])}
                   title={t.home.resultCards}
                 />
               )}

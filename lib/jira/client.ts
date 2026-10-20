@@ -430,33 +430,57 @@ export async function verifyIssueExists(
   return null;
 }
 
+function issuelinkConnects(
+  link: { inwardIssue?: { key?: string }; outwardIssue?: { key?: string } },
+  issueKey: string,
+  otherKey: string,
+): boolean {
+  const inward = link.inwardIssue?.key?.toUpperCase();
+  const outward = link.outwardIssue?.key?.toUpperCase();
+  const ends = [inward, outward].filter((key): key is string => Boolean(key));
+  if (!ends.length) {
+    return false;
+  }
+  const self = issueKey.toUpperCase();
+  const other = otherKey.toUpperCase();
+  if (inward && outward) {
+    return ends.includes(self) && ends.includes(other);
+  }
+  return ends[0] === other;
+}
+
 export async function verifyIssuesLinked(
   client: JiraClientConfig,
   fromKey: string,
   toKey: string,
 ): Promise<boolean> {
-  for (const issueKey of [fromKey, toKey]) {
-    const res = await fetch(
-      `${client.baseUrl}/issue/${encodeURIComponent(issueKey)}?fields=issuelinks`,
-      { headers: client.headers },
-    );
-    if (!res.ok) {
-      continue;
-    }
-    const data = (await res.json()) as {
-      fields?: {
-        issuelinks?: {
-          inwardIssue?: { key?: string };
-          outwardIssue?: { key?: string };
-        }[];
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (const issueKey of [fromKey, toKey]) {
+      const otherKey = issueKey.toUpperCase() === fromKey.toUpperCase() ? toKey : fromKey;
+      const res = await fetch(
+        `${client.baseUrl}/issue/${encodeURIComponent(issueKey)}?fields=issuelinks`,
+        { headers: client.headers },
+      );
+      if (!res.ok) {
+        continue;
+      }
+      const data = (await res.json()) as {
+        fields?: {
+          issuelinks?: {
+            inwardIssue?: { key?: string };
+            outwardIssue?: { key?: string };
+          }[];
+        };
       };
-    };
-    const linked = (data.fields?.issuelinks ?? []).some((link) => {
-      const keys = [link.inwardIssue?.key, link.outwardIssue?.key];
-      return keys.includes(fromKey) && keys.includes(toKey);
-    });
-    if (linked) {
-      return true;
+      const linked = (data.fields?.issuelinks ?? []).some((link) =>
+        issuelinkConnects(link, issueKey, otherKey),
+      );
+      if (linked) {
+        return true;
+      }
+    }
+    if (attempt < 4) {
+      await pause(700);
     }
   }
   return false;
@@ -555,6 +579,53 @@ export async function searchUsersByName(
     }
   }
   return [...merged.values()];
+}
+
+export async function searchDirectoryUsers(
+  client: JiraClientConfig,
+  query: string,
+): Promise<{ users: AssignableUser[]; error?: string }> {
+  const params = new URLSearchParams({ query, maxResults: "20" });
+  const res = await fetch(`${client.baseUrl}/user/search?${params.toString()}`, {
+    headers: client.headers,
+  });
+  if (res.ok) {
+    const data = (await res.json()) as Array<{
+      accountId?: string;
+      displayName?: string;
+      emailAddress?: string;
+      active?: boolean;
+    }>;
+    return {
+      users: (data ?? [])
+        .filter((user) => user.accountId && user.displayName && user.active !== false)
+        .map((user) => ({
+          accountId: user.accountId as string,
+          displayName: user.displayName as string,
+          emailAddress: user.emailAddress,
+        })),
+    };
+  }
+
+  const picker = await fetch(
+    `${client.baseUrl}/user/picker?${new URLSearchParams({ query, maxResults: "20" })}`,
+    { headers: client.headers },
+  );
+  if (!picker.ok) {
+    const detail = (await res.text().catch(() => "")).slice(0, 300);
+    return { users: [], error: `Busca de usuário falhou (${res.status}). ${detail}`.trim() };
+  }
+  const data = (await picker.json()) as {
+    users?: { accountId?: string; displayName?: string }[];
+  };
+  return {
+    users: (data.users ?? [])
+      .filter((user) => user.accountId && user.displayName)
+      .map((user) => ({
+        accountId: user.accountId as string,
+        displayName: user.displayName as string,
+      })),
+  };
 }
 
 export async function listProjects(
