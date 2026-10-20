@@ -1,0 +1,16 @@
+services:
+  holdraft:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --experimental-sqlite
+    volumes:
+      - holdraft-data:/app/data
+      - holdraft-agent:/app/agent
+    restart: unless-stopped
+
+volumes:
+  holdraft-data:
+  holdraft-agent:
